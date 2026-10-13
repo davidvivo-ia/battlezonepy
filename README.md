@@ -1,42 +1,42 @@
 # battlezonepy
 
-A faithful recreation of **Battlezone (Atari, 1980)** in Python, in **a single file: `battlezonepy.py`**.
+Recreación fiel de **Battlezone (Atari, 1980)** en Python, en **un único fichero: `battlezonepy.py`**.
 
-It is not a "game inspired by" Battlezone. The goal is to rebuild the 1980 arcade machine's behaviour from its **original source code**, published by the historicalsource collective. Every constant, AI rule and score in this document comes from reading `BZONE.MAC` and its companions. When something is an inference and not a reading, it says so.
+No es un juego «inspirado en» Battlezone. El objetivo es reconstruir el comportamiento de la recreativa de 1980 a partir de su **código fuente original**, que publicó el colectivo historicalsource. Todas las constantes, reglas de IA y puntuaciones de este documento salen de leer `BZONE.MAC` y sus ficheros hermanos. Cuando algo es inferencia y no lectura, se dice.
 
-> Confidence labels used throughout the document:
-> **[SOURCE]** read directly in Atari's original assembly ·
-> **[DERIVED]** calculated from values in the source ·
-> **[HYPOTHESIS]** reasonable, but must be calibrated against MAME ·
-> **[DESIGN]** a decision of this project, not of the original.
+> Marcas de confianza que se usan en el documento:
+> **[FUENTE]** leído directamente en el ensamblador original de Atari ·
+> **[DERIVADO]** calculado a partir de valores del fuente ·
+> **[HIPÓTESIS]** razonable, pero hay que calibrarlo contra MAME ·
+> **[DISEÑO]** decisión de este proyecto, no del original.
 
 ---
 
-## 1. The non-negotiable rule: one file
+## 1. La regla innegociable: un solo fichero
 
 ```
 battlezonepy/
-├── battlezonepy.py   ← the whole game: engine, models, AI, sound, UI
+├── battlezonepy.py   ← todo el juego: motor, modelos, IA, sonido, UI
 ├── README.md
 └── LICENSE           ← MIT
 ```
 
-No `src/`, no packages, no asset folders. Models, texts and sounds are **generated in code**, just as in 1980 they lived as tables inside the ROM. If the file grows beyond 3,000 lines, the fix is to write better code, not to split it.
+Nada de `src/`, ni paquetes, ni carpetas de assets. Los modelos, los textos y los sonidos se **generan en código**, igual que en 1980 vivían como tablas dentro de la ROM. Si el fichero pasa de 3.000 líneas, la solución es escribir mejor código, no partirlo.
 
-Why: an 8 KB ROM held this game. A single, readable, runnable file is the honest tribute, and it is also the best format for studying it.
+El motivo: este juego cabía en 8 KB de ROM. Un único fichero, legible y ejecutable, es el homenaje honesto, y además es el mejor formato para estudiarlo.
 
 ---
 
 ## 2. Stack (Python 2026)
 
-| Piece | Choice | Reason |
+| Pieza | Elección | Motivo |
 |---|---|---|
-| Interpreter | **Python ≥ 3.13** (tested on 3.14) | `match`, `dataclass(slots=True)`, modern typing, free-threaded optional |
-| Graphics, input and audio | **pygame-ce ≥ 2.5** | Antialiased lines (`draw.aaline`), gamepad, `sndarray` for synthesised sound. The *community edition* is the live fork; classic `pygame` is lagging behind |
-| Math | `math` from the stdlib | 3D for ~30 objects per frame does not need NumPy. Optional `numpy` only for generating the sound buffers |
-| Dependencies | **PEP 723** inline in the script | The file declares its own dependencies; `uv run` resolves them without a `requirements.txt` |
+| Intérprete | **Python ≥ 3.13** (probado en 3.14) | `match`, `dataclass(slots=True)`, tipado moderno |
+| Gráficos, entrada y audio | **pygame-ce ≥ 2.5** | Líneas con antialiasing (`draw.aaline`), mando, `sndarray` para sintetizar sonido. La *community edition* es el fork vivo; el `pygame` clásico va por detrás |
+| Matemáticas | `math` de la stdlib | El 3D de unos 30 objetos por fotograma no necesita NumPy. `numpy` es opcional y solo sirve para generar los buffers de sonido |
+| Dependencias | **PEP 723** dentro del script | El propio fichero declara sus dependencias y `uv run` las resuelve sin `requirements.txt` |
 
-Header expected in `battlezonepy.py`:
+Cabecera que debe llevar `battlezonepy.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -44,252 +44,253 @@ Header expected in `battlezonepy.py`:
 # requires-python = ">=3.13"
 # dependencies = ["pygame-ce>=2.5"]
 # ///
-"""battlezonepy — Battlezone (Atari 1980) recreated from the original source."""
+"""battlezonepy — Battlezone (Atari 1980) recreado desde el fuente original."""
 ```
 
-### Running it
+### Cómo ejecutarlo
 
 ```bash
-# Recommended: uv resolves dependencies from the script header
+# Recomendado: uv resuelve las dependencias leyendo la cabecera del script
 uv run battlezonepy.py
 
-# Classic route
+# Por la vía clásica
 python -m pip install "pygame-ce>=2.5"
 python battlezonepy.py
 
-# Options
+# Opciones
 python battlezonepy.py --fullscreen --scale 2
-python battlezonepy.py --lives 3 --bonus 15000 --missile 10000   # arcade DIP switches
-python battlezonepy.py --selftest                                 # headless tests, no window
+python battlezonepy.py --lives 3 --bonus 15000 --missile 10000   # DIP switches de la recreativa
+python battlezonepy.py --seed 42                                  # partida reproducible
+python battlezonepy.py --selftest                                 # tests sin abrir ventana
 ```
 
 ---
 
-## 3. What the original source tells us
+## 3. Lo que dice el código original
 
-### 3.1 Files and people [SOURCE]
+### 3.1 Ficheros y autores [FUENTE]
 
-- `BZONE.MAC` (~4,900 lines): the game core. Header: `DATE INITIATED: 25-APR-79`, `1ST PERSON VIEW OF TRADITIONAL ATARI TANK GAME`, `CONTROLS: ULTRA TANK TYPE CONTROLS`.
-- `BZONE.DOC`: release sheet dated **31 August 1981**. Programmer **Edward Rotberg**, project leader **Morgan Hoff**. Assembler `MAC65`, linker `LINKM`.
-- Link order: `BZMTNS, BZONE, BZSOUN, VGUT, BZSTST`.
-- `BZMTNS.MAC`: horizon, mountains, volcano, **3D model tables** (`PYRTBL`, `CUBTBL`, `TNKTBL`, `SHLTBL`...), plus the DIP switch tables `BONTBL` and `MISLVL`.
-- `BZSOUN.MAC`: sound over POKEY plus discrete circuitry.
-- `MBUDOC.DOC` / `MBUCOD.V05`: microcode for the **Math Box** (AMD 2901), the coprocessor for rotations, products and division.
-- `VGUT.MAC` / `VGMC.MAC`: utilities for the vector generator (AVG).
+- `BZONE.MAC` (unas 4.900 líneas): el núcleo del juego. La cabecera dice `DATE INITIATED: 25-APR-79`, `1ST PERSON VIEW OF TRADITIONAL ATARI TANK GAME` y `CONTROLS: ULTRA TANK TYPE CONTROLS`.
+- `BZONE.DOC`: hoja de release fechada el **31 de agosto de 1981**. Programador, **Edward Rotberg**; jefe de proyecto, **Morgan Hoff**. Ensamblador `MAC65` y enlazador `LINKM`.
+- Orden de enlazado: `BZMTNS, BZONE, BZSOUN, VGUT, BZSTST`.
+- `BZMTNS.MAC`: horizonte, montañas y volcán, las **tablas de los modelos 3D** (`PYRTBL`, `CUBTBL`, `TNKTBL`, `SHLTBL`…) y las tablas de DIP switches `BONTBL` y `MISLVL`.
+- `BZSOUN.MAC`: el sonido, con el chip POKEY más circuitería discreta.
+- `MBUDOC.DOC` y `MBUCOD.V05`: el microcódigo de la **Math Box** (AMD 2901), el coprocesador que hacía rotaciones, productos y divisiones.
+- `VGUT.MAC` y `VGMC.MAC`: utilidades del generador vectorial (AVG).
 
-Rotberg documents his own method in the header: **"atomic comments"**, where each block of 1 to 20 instructions is labelled `;D` (decision), `;C` (computation), `;B` (branch), `;L` (linkage) and `;S` (synchronisation). We copy that idea: each function in `battlezonepy.py` names the original routine it reimplements (`# ← ROBOT`, `# ← COLCHK`...), so you can read both side by side.
+Rotberg explica su método en la cabecera: los **«atomic comments»**. Cada bloque de 1 a 20 instrucciones lleva una etiqueta: `;D` (decisión), `;C` (cálculo), `;B` (salto), `;L` (enlace) o `;S` (sincronización). Copiamos la idea: cada función de `battlezonepy.py` nombra la rutina original que reimplementa (`# ← ROBOT`, `# ← COLCHK`…), para poder leer los dos códigos uno junto al otro.
 
-### 3.2 Main loop [SOURCE: `MAIN`, line ~420]
+### 3.2 Bucle principal [FUENTE: `MAIN`, línea ~420]
 
-One tick of the original, in order:
+Un tick del original, en este orden:
 
-1. Sync with the NMI, animate the volcano (`VOLCNO`).
-2. Draw the lower window, the upper window, the mountains and the horizon (`MOUNTS`).
-3. `ROTATE`: pick the visible objects, then translate and rotate them into camera space.
-4. `PNTPUT` + `DRAW`: project and emit vectors for each object.
-5. Cracked windshield if the player has died (`WNSHLD`).
-6. Radar (`DRADAR`), crosshair (`XCROSS` / `XCROS1` depending on alignment), messages.
-7. **Physics, 4 sub-steps**: `COLCHK` + `SHUPDT` four times per frame. Shells move in substeps so they never "tunnel" through an object. **This must be kept.**
-8. `QWIKCK` (fast shell → enemy check), `ROBOT`, `SAUCMV`, `BOUND`, `MOTION` (player).
+1. Sincronizar con la NMI y animar el volcán (`VOLCNO`).
+2. Ventana inferior, ventana superior, montañas y horizonte (`MOUNTS`).
+3. `ROTATE`: elegir los objetos visibles, trasladarlos y rotarlos al espacio de cámara.
+4. `PNTPUT` y `DRAW`: proyectar cada objeto y emitir sus vectores.
+5. Parabrisas roto si el jugador ha muerto (`WNSHLD`).
+6. Radar (`DRADAR`), mira (`XCROSS` o `XCROS1` según haya alineación) y mensajes.
+7. **Física en 4 subpasos**: `COLCHK` y `SHUPDT` se ejecutan cuatro veces por fotograma. Así los proyectiles avanzan a pasos cortos y nunca atraviesan un objeto sin tocarlo. **Hay que conservarlo.**
+8. `QWIKCK` (choque rápido proyectil → enemigo), `ROBOT`, `SAUCMV`, `BOUND` y `MOTION` (jugador).
 
-### 3.3 World, angles and units [SOURCE + DERIVED]
+### 3.3 Mundo, ángulos y unidades [FUENTE + DERIVADO]
 
-- Positions are **16 bits per axis** (`TPOSX`, `TPOSY`). The world is a **65,536 × 65,536 torus**: leave on one side and you come back on the other. There are no walls.
-- Angles are **8 bits** (`TANGLE`, so 256 units = 360°) plus 1 fractional bit (`LANGLE`, steps of `0x80`). One `ITANGL`/`DTANGL` call turns half a unit.
-- **21 fixed obstacles** in the playfield (`PTBLX1` / `PTBLY1`, values ×4). Copy them as is: that map *is* Battlezone.
-- Models: **pyramid**, **cube** (wide and narrow block), tank, shell, treads, radar, explosion fragments, missile (`R2DOBJ`), saucer (`SAUOBJ`) and supertank (`TR7OBJ`). The vertex tables are in `BZMTNS.MAC` (`PYRTBL`, `CUBTBL`...).
+- Las posiciones son de **16 bits por eje** (`TPOSX`, `TPOSY`). El mundo es un **toro de 65.536 × 65.536**: si sales por un lado, entras por el contrario. No hay muros.
+- Los ángulos son de **8 bits** (`TANGLE`, es decir, 256 unidades = 360°) más un bit de fracción (`LANGLE`, en pasos de `0x80`). Cada llamada a `ITANGL` o `DTANGL` gira media unidad.
+- El campo tiene **21 obstáculos fijos** (`PTBLX1` / `PTBLY1`, valores ×4). Se copian tal cual: ese mapa *es* Battlezone.
+- Modelos: **pirámide**, **cubo** (bloque ancho y estrecho), tanque, proyectil, orugas, radar, fragmentos de explosión, misil (`R2DOBJ`), platillo (`SAUOBJ`) y supertanque (`TR7OBJ`). Las tablas de vértices están en `BZMTNS.MAC` (`PYRTBL`, `CUBTBL`…).
 
-### 3.4 Player controls [SOURCE: `MOTION`, `MTAB`]
+### 3.4 Controles del jugador [FUENTE: `MOTION`, `MTAB`]
 
-Two levers, each forward / neutral / back. The `MTAB` table maps the combinations:
+Dos palancas, cada una con tres posiciones: adelante, neutro y atrás. La tabla `MTAB` decide qué hace cada combinación:
 
-| Left lever | Right lever | Action | Turn per tick |
+| Palanca izq. | Palanca der. | Acción | Giro por tick |
 |---|---|---|---|
-| ↑ | ↑ | full forward | — |
-| ↓ | ↓ | full reverse | — |
-| ↑ | — | forward + turn right | ½ unit |
-| — | ↑ | forward + turn left | ½ unit |
-| ↓ | — | reverse + turn | ½ unit |
-| ↑ | ↓ | **pivot on the spot** right | 1 unit |
-| ↓ | ↑ | **pivot on the spot** left | 1 unit |
+| ↑ | ↑ | avance a tope | — |
+| ↓ | ↓ | retroceso a tope | — |
+| ↑ | — | avanza y gira a la derecha | ½ unidad |
+| — | ↑ | avanza y gira a la izquierda | ½ unidad |
+| ↓ | — | retrocede y gira | ½ unidad |
+| ↑ | ↓ | **pivota sobre sí mismo** a la derecha | 1 unidad |
+| ↓ | ↑ | **pivota sobre sí mismo** a la izquierda | 1 unidad |
 
-Movement step: `M.SET` uses `0.75 · sin/cos(angle)` per call, and full forward calls it twice [SOURCE]. When you hit an obstacle, `BAKOUT` restores the previous position, plays `BOING`, applies a camera `BOUNCE` and shows **"MOTION BLOCKED BY OBJECT"**.
+El paso de avance lo calcula `M.SET` como `0,75 · sen/cos(ángulo)`, y el avance a tope lo aplica dos veces [FUENTE]. Al chocar con un obstáculo, `BAKOUT` devuelve el tanque a su posición anterior, suena `BOING`, la cámara rebota (`BOUNCE`) y aparece **«MOTION BLOCKED BY OBJECT»**.
 
-Mapping in battlezonepy [DESIGN]:
+Mapeo en battlezonepy [DISEÑO]:
 
-- **Tank mode (purist)**: `Q`/`A` = left lever, `P`/`L` = right lever (or both analog sticks on a gamepad).
-- **Arcade-assisted mode (default)**: arrow keys, plus the space bar to fire. This translates to the `MTAB` combinations above, so the physics stays identical.
+- **Modo tanque (purista)**: `Q`/`A` hacen de palanca izquierda y `P`/`L` de palanca derecha (en mando, los dos sticks analógicos).
+- **Modo arcade asistido (por defecto)**: flechas y barra espaciadora para disparar. Se traduce a las combinaciones de `MTAB` de arriba, así que la física es idéntica.
 
-### 3.5 Shells [SOURCE: `MOTION` fire, `SHUPDT`, `COLCHK`]
+### 3.5 Proyectiles [FUENTE: disparo en `MOTION`, `SHUPDT`, `COLCHK`]
 
-- **One shell per tank at a time** (`FIRECT ≠ 0` blocks a new shot). Lifetime: `FIRECT = 0x7F` = 127 sub-steps, about **32 frames** at 4 sub-steps per frame.
-- Velocity is `2·cos/sin(angle)` per sub-step [DERIVED], so range ≈ 127 × 254 ≈ **32,000 units, half the world**.
-- A shell that hits an obstacle explodes (`FIRECT = 0xA0`). A shell that hits a tank calls `EXINIT`.
+- **Un proyectil por tanque a la vez** (mientras `FIRECT ≠ 0` no se puede disparar). Vida: `FIRECT = 0x7F`, es decir, 127 subpasos, unos **32 fotogramas** a 4 subpasos por fotograma.
+- La velocidad es `2·cos/sen(ángulo)` por subpaso [DERIVADO], lo que da un alcance de unas 127 × 254 ≈ **32.000 unidades, medio mundo**.
+- Si el proyectil choca con un obstáculo, explota (`FIRECT = 0xA0`). Si choca con un tanque, se llama a `EXINIT`.
 
-### 3.6 Enemies and scoring [SOURCE: `QWIKCK`, `SAUCHK`, `BUZBOM`]
+### 3.6 Enemigos y puntuación [FUENTE: `QWIKCK`, `SAUCHK`, `BUZBOM`]
 
-`HITS` holds the score in **BCD, in thousands**. On screen, `SCORE ... 000` is printed literally.
+`HITS` guarda la puntuación **en BCD y en miles**. Por eso en pantalla se imprime literalmente `SCORE ... 000`.
 
-| Enemy | Points | Behaviour |
+| Enemigo | Puntos | Comportamiento |
 |---|---|---|
-| **Tank** | 1,000 | Standard AI (§3.7) |
-| **Supertank** (`TR7`) | 3,000 | Moves forward at **double speed**, keeps more distance (`MOUTHI ≥ 8` vs `≥ 5`). Appears once `NOR2D3 ≥ 5` (`TR7CHK`) |
-| **Missile** (`R2D3`, "buzz bomber") | 2,000 | Swoops at the player in zigzags (`FRAME & 0x1F` modulates the angle). Starts high (`STARTZ = 0x1800`). On hitting an obstacle it **levitates** over it and dives again. Can only be hit below `TOP = 0x200`. Never attacks from behind |
-| **Saucer** | 5,000 | Harmless. Appears only with `HITS ≥ 2` (2,000 points). Random drift with a random timer and spins `+8` per tick |
+| **Tanque** | 1.000 | IA estándar (§3.7) |
+| **Supertanque** (`TR7`) | 3.000 | Avanza al **doble de velocidad** y guarda más distancia (`MOUTHI ≥ 8` frente a `≥ 5`). Aparece cuando `NOR2D3 ≥ 5` (`TR7CHK`) |
+| **Misil** (`R2D3`, «buzz bomber») | 2.000 | Se lanza contra el jugador en zigzag (`FRAME & 0x1F` va modulando el ángulo). Arranca en altura (`STARTZ = 0x1800`). Si choca con un obstáculo, **levita** por encima y vuelve a picar. Solo se le puede dar por debajo de `TOP = 0x200`. Nunca ataca por la espalda |
+| **Platillo** | 5.000 | Inofensivo. Solo aparece con `HITS ≥ 2` (2.000 puntos). Deriva al azar con un temporizador aleatorio y gira `+8` por tick |
 
-Only one ground enemy at a time (tank, supertank or missile), plus at most one saucer.
+Nunca hay más de un enemigo de tierra a la vez (tanque, supertanque o misil), y como mucho un platillo además.
 
-### 3.7 Enemy tank AI [SOURCE: `ROBOT`, `REACT`, `FIREIT`, `ROBCHK`]
+### 3.7 IA del tanque enemigo [FUENTE: `ROBOT`, `REACT`, `FIREIT`, `ROBCHK`]
 
-A state machine driven by `ACTION` (reaction timer) and `STATE`:
+Es una máquina de estados que gobiernan `ACTION` (temporizador de reacción) y `STATE`:
 
-- **Decision** (`ACTION == 0`):
-  - If it has been "polite" too long (`FTIMER == 0xFF`), or a random coin flip says so, or the player has 100,000 points or more: it switches to **ATTACK** (`RGOAL = TRACK()`, the arctangent towards the player).
-  - Otherwise it compares the player's kills (`HITS`) with the enemy's (`HITS+2`):
-    - player **ahead**: **ATTACK**
-    - **tied**: **EVADE**, heading for `TRACK() XOR 0x40`, a perpendicular escape route
-    - player **behind**: **RANDOM**, wandering with `RGOAL ± (rand & 0x1F)`
-  - During attract mode, the enemy always wanders randomly.
-- **Adaptive difficulty** (`REACT`): reaction time and aim accuracy (`SKILL`) depend on `HITS − HITS_enemy`. The better you play, the faster and more accurate it gets. It is dynamic difficulty balancing in 1979.
-- **Steering**: if the angular error is larger than `SKILL`, it pivots 2 steps per tick. If not, it fine-tunes 1 step and advances.
-- **Distance**: it does not advance when it is already close (`MOUTHI < 5`), so it "duels" rather than rams.
-- **Firing** (`FIREIT`) requires all of the following: `FTIMER ≥ 0x20` (a grace period after spawning), alignment `< 2` units, its shell available, and the player alive. With a beginner player (`HITS < 2`), it only fires if the player can see it.
-- **Collision with an obstacle**: `STATE` bit 0 is set, it backs up turning to a random side, then sets a new goal.
-- **Spawn** (`ROBCHK`/`TANKCK`): the enemy appears in a **window in front of the player** whose width depends on the score difference. If `HITS ≥ MISLVL[dip]`, there is a 50% chance a **missile** comes instead of a tank.
+- **Decisión** (cuando `ACTION == 0`):
+  - Si lleva demasiado tiempo «portándose bien» (`FTIMER == 0xFF`), si lo decide una moneda al aire o si el jugador tiene 100.000 puntos o más, pasa a **ATACAR**: `RGOAL = TRACK()`, la arcotangente hacia el jugador.
+  - Si no, compara las bajas del jugador (`HITS`) con las del enemigo (`HITS+2`):
+    - jugador **por delante**: **ATACAR**
+    - **empate**: **HUIR**, rumbo a `TRACK() XOR 0x40`, una ruta de escape perpendicular
+    - jugador **por detrás**: **VAGAR**, con `RGOAL ± (rand & 0x1F)`
+  - En modo attract, el enemigo siempre vaga al azar.
+- **Dificultad adaptativa** (`REACT`): el tiempo de reacción y la puntería (`SKILL`) dependen de `HITS − HITS_enemigo`. Cuanto mejor juegas, más rápido y certero se vuelve. Es ajuste dinámico de dificultad en 1979.
+- **Giro**: si el error angular supera `SKILL`, pivota 2 pasos por tick; si no, corrige 1 paso y avanza.
+- **Distancia**: no avanza si ya está cerca (`MOUTHI < 5`). Busca el duelo, no la embestida.
+- **Disparo** (`FIREIT`): tienen que cumplirse todas estas condiciones: `FTIMER ≥ 0x20` (periodo de gracia tras aparecer), alineación de menos de 2 unidades, proyectil propio disponible y jugador vivo. Contra un novato (`HITS < 2`) solo dispara si el jugador lo tiene a la vista.
+- **Choque con un obstáculo**: activa el bit 0 de `STATE`, retrocede girando hacia un lado al azar y luego fija un objetivo nuevo.
+- **Aparición** (`ROBCHK` / `TANKCK`): el enemigo aparece en una **ventana delante del jugador**, más o menos ancha según la diferencia de bajas. Si `HITS ≥ MISLVL[dip]`, hay un 50 % de probabilidad de que salga un **misil** en vez de un tanque.
 
-### 3.8 Lives, bonus and DIP switches [SOURCE: `NEWLIF`, `BONTBL`, `MISLVL`]
+### 3.8 Vidas, bonus y DIP switches [FUENTE: `NEWLIF`, `BONTBL`, `MISLVL`]
 
-| Setting | Values | Source |
+| Ajuste | Valores | Origen |
 |---|---|---|
-| Starting lives | `(OPTION & 3) + 2` → **2, 3, 4, 5** | `PWRON` init |
-| Bonus life | **none / 15,000 / 25,000 / 50,000** | `BONTBL: .BYTE 0,14,24,49` (BCD, life awarded when you *exceed* the value) |
-| Super bonus | **100,000** | `NEWLIF`, branch `SUPER` |
-| Missile appears from | **5,000 / 10,000 / 20,000 / 30,000** | `MISLVL: .BYTE 5,10,20,30` |
+| Vidas iniciales | `(OPTION & 3) + 2` → **2, 3, 4 o 5** | inicialización en `PWRON` |
+| Vida extra | **ninguna / 15.000 / 25.000 / 50.000** | `BONTBL: .BYTE 0,14,24,49` (en BCD; la vida se da al *superar* el valor) |
+| Superbonus | **100.000** | `NEWLIF`, rama `SUPER` |
+| El misil aparece desde | **5.000 / 10.000 / 20.000 / 30.000** | `MISLVL: .BYTE 5,10,20,30` |
 
-Recommended defaults [DESIGN]: 3 lives, bonus at 15,000, missile from 10,000.
+Valores por defecto recomendados [DISEÑO]: 3 vidas, bonus a 15.000 y misil desde 10.000.
 
-### 3.9 HUD and messages [SOURCE: `ENGMSG` table]
+### 3.9 HUD y mensajes [FUENTE: tabla `ENGMSG`]
 
-Literal texts to reproduce: `ENEMY IN RANGE`, `ENEMY TO LEFT` / `RIGHT` / `REAR` (blinking when the enemy is outside the field of view, `PTURN ≥ 22`), `MOTION BLOCKED BY OBJECT`, `GAME OVER`, `PRESS START`, `SCORE … 000`, `HIGH SCORE … 000`, `HIGH SCORES`, `GREAT SCORE`, `ENTER YOUR INITIALS`, `© 1980 ATARI` (in the attract screen only, out of respect for the original).
+Textos que hay que reproducir literalmente: `ENEMY IN RANGE`, `ENEMY TO LEFT` / `RIGHT` / `REAR` (parpadean cuando el enemigo está fuera de campo, con `PTURN ≥ 22`), `MOTION BLOCKED BY OBJECT`, `GAME OVER`, `PRESS START`, `SCORE … 000`, `HIGH SCORE … 000`, `HIGH SCORES`, `GREAT SCORE`, `ENTER YOUR INITIALS` y `© 1980 ATARI` (este último solo en la pantalla de attract, por respeto al original).
 
-- **Radar**: a circle in the upper centre with a sweep of `+0x0B` per tick, and a blip for the enemy within range.
-- **Crosshair**: two variants (`XCROSS` / `XCROS1`) depending on whether the enemy is aligned.
-- **Death**: progressive **cracked windshield** (`CRACKS`, 16 segments drawn in steps), with the image frozen.
-- **High scores**: 10 entries with 3 initials, chosen letter by letter.
-- **Attract mode**: an AI tank drives around alone, then the `BATTLE ZONE` logo, then the score table.
+- **Radar**: un círculo arriba en el centro, con un barrido de `+0x0B` por tick y un punto para el enemigo cuando está a tiro.
+- **Mira**: dos variantes (`XCROSS` / `XCROS1`), según esté o no alineado el enemigo.
+- **Muerte**: el **parabrisas se resquebraja** poco a poco (`CRACKS`, 16 segmentos dibujados por pasos) con la imagen congelada.
+- **Récords**: 10 puestos con 3 iniciales, elegidas letra a letra.
+- **Modo attract**: un tanque manejado por la IA conduce solo, luego aparece el logo `BATTLE ZONE` y después la tabla de récords.
 
-### 3.10 Colour and display [SOURCE + DESIGN]
+### 3.10 Color y pantalla [FUENTE + DISEÑO]
 
-The original monitor was a **monochrome green** vector display, with a red cellophane strip over the upper part where the radar and messages sit. Reproduce it like this:
+El monitor original era un **vectorial monocromo verde**, con una tira de celofán rojo encima de la franja superior, donde están el radar y los mensajes. Para reproducirlo:
 
-- Background `#000000`, vectors `#33FF33` with intensity modulated by depth (`DQUE`: distant objects are dimmer).
-- Upper band (HUD) in `#FF3030`.
-- **Phosphor glow** effect [DESIGN, optional]: draw every line twice, the second time wider and at 25% alpha, onto an additive surface.
-- Base logical resolution of 1024 × 768 (the AVG's aspect ratio), scaled to the window.
+- Fondo `#000000` y vectores `#33FF33`, con una intensidad que baja con la profundidad (`DQUE`: lo lejano se ve más tenue).
+- Franja superior (HUD) en `#FF3030`.
+- **Brillo de fósforo** [DISEÑO, opcional]: cada línea se dibuja dos veces; la segunda, más gruesa y al 25 % de alfa, sobre una superficie en modo aditivo.
+- Resolución lógica base de 1024 × 768 (la relación de aspecto del AVG), escalada a la ventana.
 
 ---
 
-## 4. Architecture of `battlezonepy.py` [DESIGN]
+## 4. Arquitectura de `battlezonepy.py` [DISEÑO]
 
-Order of sections inside the file, each one introduced by a header comment:
+Secciones del fichero, en este orden y cada una con su comentario de cabecera:
 
 ```
-§0  Header PEP 723, docstring, imports, CLI (argparse)
-§1  CONSTANTS        ← all the original values, with a comment citing the routine/line
-§2  FIXED MATH       angle8 ↔ radians, sin/cos tables of 256 entries, toroidal wrap
-§3  MODELS           vertices/edges of PYR, CUB, TNK, SHL, R2D, SAU, TR7, TREADS, EXP*
-§4  PLAYFIELD        the 21 obstacles of PTBLX1/PTBLY1, mountains and volcano
-§5  ENTITIES         @dataclass(slots=True): Tank, Shell, Missile, Saucer, Debris
-§6  RENDER           camera, near-plane clipping, perspective projection, glow
-§7  AI               robot(), react(), fireit(), buzbom(), saucmv(), robchk()
-§8  PHYSICS          motion(), colchk() ×4 substeps, qwikck(), objobj(), bakout()
-§9  SOUND            POKEY-style synthesis: engine, shot, explosion, boing, bonus bell
-§10 STATES           ATTRACT → PLAY → DEATH(cracks) → GAMEOVER → INITIALS → HISCORES
-§11 LOOP             fixed timestep + render with interpolation
-§12 SELFTEST         assertions for scoring, wrap, collisions, AI, without opening a window
+§0  Cabecera PEP 723, docstring, imports, CLI (argparse)
+§1  CONSTANTES       ← todos los valores originales, con un comentario que cita la rutina o línea
+§2  MATEMÁTICA FIJA  angle8 ↔ radianes, tablas sen/cos de 256 entradas, wrap toroidal
+§3  MODELOS          vértices y aristas de PYR, CUB, TNK, SHL, R2D, SAU, TR7, TREADS, EXP*
+§4  CAMPO            los 21 obstáculos de PTBLX1/PTBLY1, montañas y volcán
+§5  ENTIDADES        @dataclass(slots=True): Tank, Shell, Missile, Saucer, Debris
+§6  RENDER           cámara, recorte contra el plano cercano, proyección en perspectiva, glow
+§7  IA               robot(), react(), fireit(), buzbom(), saucmv(), robchk()
+§8  FÍSICA           motion(), colchk() en 4 subpasos, qwikck(), objobj(), bakout()
+§9  SONIDO           síntesis al estilo POKEY: motor, disparo, explosión, boing, campana de bonus
+§10 ESTADOS          ATTRACT → PLAY → DEATH (cristal roto) → GAMEOVER → INITIALS → HISCORES
+§11 BUCLE            paso de tiempo fijo + render con interpolación
+§12 SELFTEST         aserciones de puntuación, wrap, colisiones e IA, sin abrir ventana
 ```
 
-### Technical decisions
+### Decisiones técnicas
 
-- **Fixed timestep.** Logic runs at a constant rate and rendering at the screen's rate. The original synced to the NMI; its effective frequency is **[HYPOTHESIS]** to be measured in MAME (`-debug`, breakpoint on `MAIN`). Until it is measured, use **60 Hz logic** and a single `TICK_HZ` constant so it can be calibrated.
-- **Faithful integers where they matter.** Angles stay `int` in `0..255`, plus a half-unit fraction. Positions stay `int` modulo 65536. Projection and drawing use `float`. This reproduces the original "feel" (fixed angular granularity) without suffering 8-bit arithmetic.
-- **The Math Box is not emulated.** It is replaced by `math` and a 256-entry sin/cos table. What matters is the result (rotation, distance, `TRACK`'s arctangent), not the AMD 2901 microcode.
-- **Toroidal distance.** Always use the minimum difference modulo 65536 on each axis before computing a distance or an angle. Without this the AI goes mad at the world's edge.
-- **Clipping against the near plane** before dividing by `z`. Without it, an obstacle right behind the camera produces lines that cross the whole screen.
-- **Synthesised sound.** No WAVs. Square waves and LFSR noise generated with `pygame.sndarray` (or `array` without NumPy). Engine at two speeds (`LIDLE` / `HIDLE`), as in the original.
-- **Deterministic RNG.** `random.Random(seed)` stands in for POKEY's `PRAND`. `--seed N` reproduces a game exactly; that is essential for debugging the AI.
-- **No global state.** One `Game` object that holds everything; pure functions where possible, so `--selftest` can test them.
+- **Paso de tiempo fijo.** La lógica corre a frecuencia constante y el render a la de la pantalla. El original se sincronizaba con la NMI, y su frecuencia efectiva es una **[HIPÓTESIS]** que hay que medir en MAME (`-debug`, con un breakpoint en `MAIN`). Mientras tanto, la lógica va a **60 Hz** con una única constante `TICK_HZ` para poder calibrarla.
+- **Enteros fieles donde importan.** Los ángulos son `int` entre 0 y 255, más media unidad de fracción. Las posiciones son `int` módulo 65536. La proyección y el dibujo van en `float`. Así se conserva el «tacto» del original (giro en saltos fijos) sin pelearse con aritmética de 8 bits.
+- **La Math Box no se emula.** La sustituyen `math` y una tabla sen/cos de 256 entradas. Importa el resultado (rotación, distancia, la arcotangente de `TRACK`), no el microcódigo del AMD 2901.
+- **Distancia toroidal.** Antes de calcular cualquier distancia o ángulo, usa siempre la diferencia mínima módulo 65536 en cada eje. Si no, la IA se vuelve loca en el borde del mundo.
+- **Recorte contra el plano cercano** antes de dividir por `z`. Sin él, un obstáculo justo detrás de la cámara genera líneas que cruzan toda la pantalla.
+- **Sonido sintetizado.** Nada de WAV. Ondas cuadradas y ruido LFSR generados con `pygame.sndarray` (o con `array`, sin NumPy). El motor tiene dos velocidades (`LIDLE` / `HIDLE`), como en el original.
+- **RNG determinista.** `random.Random(seed)` hace el papel de `PRAND`, el generador del POKEY. Con `--seed N` una partida se reproduce exactamente, y eso es imprescindible para depurar la IA.
+- **Sin estado global.** Un único objeto `Game` lo contiene todo, y se usan funciones puras siempre que se pueda, para que `--selftest` pueda probarlas.
 
-### Minimum `--selftest` contract
+### Contrato mínimo de `--selftest`
 
 ```text
-✓ wrap(65535 + 1) == 0 and toroidal distance symmetric
-✓ tank 1000 / supertank 3000 / missile 2000 / saucer 5000
-✓ bonus life when crossing 15000 (not when reaching it); super bonus at 100000
-✓ lives = 2..5 according to DIP
-✓ one shell per tank; shell dies at 127 substeps
-✓ BAKOUT: the player never ends up inside an obstacle
-✓ the enemy does not fire during the FTIMER < 0x20 grace period
-✓ the saucer does not appear with HITS < 2
-✓ clipping: no projected vertex with z ≤ near
+✓ wrap(65535 + 1) == 0 y distancia toroidal simétrica
+✓ tanque 1000 / supertanque 3000 / misil 2000 / platillo 5000
+✓ vida extra al superar 15000 (no al alcanzarlo); superbonus en 100000
+✓ vidas = 2..5 según el DIP
+✓ un proyectil por tanque; el proyectil muere a los 127 subpasos
+✓ BAKOUT: el jugador nunca queda dentro de un obstáculo
+✓ el enemigo no dispara durante la gracia de FTIMER < 0x20
+✓ el platillo no aparece con HITS < 2
+✓ recorte: ningún vértice proyectado con z ≤ near
 ```
 
 ---
 
-## 5. Roadmap
+## 5. Hoja de ruta
 
-| Milestone | Content | Done when… |
+| Hito | Contenido | Está terminado cuando… |
 |---|---|---|
-| **M1 — Wireframe world** | Camera, the 21 obstacles, horizon, mountains, volcano, tank controls, `BAKOUT` | You can drive the battlefield and crash into pyramids |
-| **M2 — Combat** | Shells with 4 substeps, enemy tank with full AI, explosions, radar, crosshair, messages | One full game against tanks only |
-| **M3 — Bestiary** | Missile with swoop and levitation, saucer, supertank, scoring, bonus, DIP switches | All values in §3.6–3.8 pass `--selftest` |
-| **M4 — Arcade** | Attract mode, cracked windshield, high score table with initials, synthesised sound | It is indistinguishable at a glance from a MAME capture |
-| **M5 — Polish** | Phosphor glow, gamepad, fullscreen, persistent high scores in `~/.battlezonepy.json` | — |
+| **M1 — Mundo en alambre** | Cámara, los 21 obstáculos, horizonte, montañas, volcán, controles de tanque, `BAKOUT` | Se puede recorrer el campo de batalla y chocar con las pirámides |
+| **M2 — Combate** | Proyectiles con 4 subpasos, tanque enemigo con la IA completa, explosiones, radar, mira, mensajes | Se juega una partida entera, solo contra tanques |
+| **M3 — Bestiario** | Misil con picado y levitación, platillo, supertanque, puntuación, bonus, DIP switches | Todos los valores de §3.6–3.8 pasan el `--selftest` |
+| **M4 — Recreativa** | Modo attract, parabrisas roto, tabla de récords con iniciales, sonido sintetizado | A simple vista no se distingue de una captura de MAME |
+| **M5 — Pulido** | Brillo de fósforo, mando, pantalla completa, récords guardados en `~/.battlezonepy.json` | — |
 
-Validation method: put MAME (`bzone` driver) side by side with battlezonepy and compare speeds, turn rates and shell range. Every difference becomes either a constant fix or an entry in §6.
+Método de validación: MAME (driver `bzone`) al lado de battlezonepy, comparando velocidades, ritmo de giro y alcance del proyectil. Cada diferencia acaba como una constante corregida o como una entrada en §6.
 
 ---
 
-## 6. Known deviations from the original
+## 6. Desviaciones conocidas respecto al original
 
-Document here every place where battlezonepy deliberately departs from the arcade. A deviation that is not documented is a bug.
+Aquí se documenta cada sitio donde battlezonepy se aparta a propósito de la recreativa. Una desviación sin documentar es un bug.
 
-- *(empty until M1)*
-
----
-
-## 7. Reference sources
-
-### Primary, used for this document
-
-| Source | What it gives | Confidence |
-|---|---|---|
-| [historicalsource/battlezone](https://github.com/historicalsource/battlezone) | Original Atari source (~8,500 lines of 6502, *rev 1*), `BZONE.DOC`, `MBUDOC.DOC`. Published 14-Oct-2021 | **CONFIRMED** (read for this README) |
-| [6502disassembly.com — Battlezone](https://6502disassembly.com/va-battlezone/) | Andy McFadden's annotated disassembly (**rev 2**, SourceGen), vector decoder, notes on Math Box, 3D objects and rev 1 → rev 2 differences | **CONFIRMED** |
-| [MAME — `src/mame/atari`](https://github.com/mamedev/mame/tree/master/src/mame/atari) | `bzone.cpp`, `bzone_a.cpp`, `mathbox.cpp` (BSD). Emulates Battlezone, Bradley Trainer, Red Baron and Desert Wars. It is the **behavioural oracle** for calibration | **CONFIRMED** |
-
-> Note: the historicalsource code is **rev 1**; McFadden's disassembly is **rev 2**. Where they differ, battlezonepy follows **rev 1** (it is the readable source) and lists rev 2 differences in §6 if they are adopted.
-
-### Secondary
-
-| Source | Interest | Confidence |
-|---|---|---|
-| [cbzone (pkgsrc)](https://pkgsrc.se/games/cbzone) | Unix/X11 clone in C, derived from a Fortran original by Justin S. Revenaugh. Useful to compare clipping solutions | PROBABLE |
-| [LittleZone (Arduino)](https://blog.arduino.cc/?p=31591) | Mark Wilson's port to Arduino Uno, made by studying the 6502 | SINGLE SOURCE |
-| [Battlezone 2000 — Games That Weren't](https://gamesthatwerent.com/2025/01/battlezone-2000) | Jaguar context (Hover Strike code with "BattleZone Modifications") | SINGLE SOURCE |
-| [AtariProtos — 2600](https://www.atariprotos.com/2600/software/battlezone/battlezone.htm) | Atari 2600 port | Reference |
-| [Atari arcade sources list](https://6502disassembly.com/other-va.html) | Index of sources for other Atari vector games | Reference |
-
-### Out of scope
-
-- **Bradley Trainer** (military version): only the MAME emulation exists; no source has been found.
-- **Battlezone 1998 / 98 Redux / Battlezone II**: closed code. The leaked copy that circulates is **not used or consulted**. It is a different game (RTS/FPS) anyway.
-- **Home ports** (2600, Spectrum, C64, Atari 8-bit): no published disassemblies. They are not needed: the arcade is the canon.
+- *(vacío hasta M1)*
 
 ---
 
-## 8. Legal
+## 7. Fuentes de referencia
 
-- battlezonepy's code is under the **MIT** licence (see `LICENSE`).
-- **No ROMs, binaries or graphics** from Atari are included or distributed. The models are rebuilt as coordinates in Python from reading the source, which is published for historical study. If you need to cross-check the binary, McFadden explains how to regenerate it [here](https://6502disassembly.com/va-battlezone/bingen.html).
-- "Battlezone" is a trademark of Atari. This project is a non-commercial, educational fan recreation. If it is ever distributed publicly, the window title and the attract screen must make clear that it is an unofficial tribute, and any use of the logo must be avoided.
+### Primarias, usadas para este documento
+
+| Fuente | Qué aporta | Confianza |
+|---|---|---|
+| [historicalsource/battlezone](https://github.com/historicalsource/battlezone) | El fuente original de Atari (unas 8.500 líneas de 6502, *rev 1*), `BZONE.DOC` y `MBUDOC.DOC`. Publicado el 14-oct-2021 | **CONFIRMADO** (leído para este README) |
+| [6502disassembly.com — Battlezone](https://6502disassembly.com/va-battlezone/) | El desensamblado anotado de Andy McFadden (**rev 2**, con SourceGen), su decodificador de vectores y notas sobre la Math Box, los objetos 3D y las diferencias rev 1 → rev 2 | **CONFIRMADO** |
+| [MAME — `src/mame/atari`](https://github.com/mamedev/mame/tree/master/src/mame/atari) | `bzone.cpp`, `bzone_a.cpp` y `mathbox.cpp` (BSD). Emula Battlezone, Bradley Trainer, Red Baron y Desert Wars. Es el **oráculo de comportamiento** para calibrar | **CONFIRMADO** |
+
+> Ojo: el código de historicalsource es la **rev 1** y el desensamblado de McFadden es la **rev 2**. Donde difieran, battlezonepy sigue la **rev 1**, porque es el fuente legible. Si se adopta alguna diferencia de la rev 2, se apunta en §6.
+
+### Secundarias
+
+| Fuente | Interés | Confianza |
+|---|---|---|
+| [cbzone (pkgsrc)](https://pkgsrc.se/games/cbzone) | Clon en C para Unix/X11, derivado de un original en Fortran de Justin S. Revenaugh. Sirve para comparar cómo resuelve el recorte | PROBABLE |
+| [LittleZone (Arduino)](https://blog.arduino.cc/?p=31591) | La versión para Arduino Uno de Mark Wilson, hecha estudiando el 6502 | FUENTE ÚNICA |
+| [Battlezone 2000 — Games That Weren't](https://gamesthatwerent.com/2025/01/battlezone-2000) | Contexto de la Jaguar (código de Hover Strike con «BattleZone Modifications») | FUENTE ÚNICA |
+| [AtariProtos — 2600](https://www.atariprotos.com/2600/software/battlezone/battlezone.htm) | La versión para Atari 2600 | Referencia |
+| [Lista de fuentes de recreativas Atari](https://6502disassembly.com/other-va.html) | Índice de fuentes de otros juegos vectoriales de Atari | Referencia |
+
+### Fuera de alcance
+
+- **Bradley Trainer** (la versión militar): solo existe la emulación de MAME; no se ha encontrado su código fuente.
+- **Battlezone 1998, 98 Redux y Battlezone II**: código cerrado. La copia filtrada que circula **ni se usa ni se consulta**. Además, es otro juego (RTS/FPS).
+- **Ports domésticos** (2600, Spectrum, C64, Atari de 8 bits): no hay desensamblados publicados. Tampoco hacen falta: el canon es la recreativa.
+
+---
+
+## 8. Aspectos legales
+
+- El código de battlezonepy tiene licencia **MIT** (ver `LICENSE`).
+- **No se incluyen ni se distribuyen ROMs, binarios ni gráficos** de Atari. Los modelos se reconstruyen como coordenadas en Python a partir de la lectura del fuente, que está publicado para su estudio histórico. Si necesitas contrastar con el binario, McFadden explica cómo regenerarlo [aquí](https://6502disassembly.com/va-battlezone/bingen.html).
+- «Battlezone» es una marca de Atari. Este proyecto es una recreación de fan, educativa y sin ánimo de lucro. Si alguna vez se distribuye públicamente, el título de la ventana y la pantalla de attract deben dejar claro que es un homenaje no oficial, y hay que evitar cualquier uso del logotipo.
