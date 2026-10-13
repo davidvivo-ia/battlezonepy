@@ -20,7 +20,7 @@ uv run battlezonepy.py
 
 ```
 battlezonepy/
-├── battlezonepy.py   ← todo el juego: datos, motor, IA, sonido, interfaz y tests (~2.400 líneas)
+├── battlezonepy.py   ← todo el juego: datos, motor, IA, sonido, interfaz y tests (~2.500 líneas)
 ├── README.md
 └── LICENSE           ← MIT
 ```
