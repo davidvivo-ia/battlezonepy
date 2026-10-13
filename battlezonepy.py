@@ -499,6 +499,7 @@ class Game:
         self.rng = random.Random(seed)
         self.table = table or default_table()
         self.events: list[str] = []   # sonidos de un disparo, los consume la interfaz
+        self.fx: list[tuple] = []     # efectos visuales con posición, los consume el render
         self.player = Body(x=128, y=128)
         self.pshell = Shell()
         self.enemy = Enemy()
@@ -546,6 +547,11 @@ class Game:
     def prand(self) -> int:
         """← PRAND: el generador del POKEY, aquí determinista con --seed."""
         return self.rng.randrange(256)
+
+    def fxe(self, kind: str, x: float, y: float, z: float = 0.0, a: float = 0.0) -> None:
+        """Evento visual (explosión, chispa, fogonazo). No afecta a la lógica."""
+        if len(self.fx) < 256:
+            self.fx.append((kind, x, y, z, a))
 
     def emit(self, name: str) -> None:
         if self.mode != ATTRACT or name in ("start", "gameover"):   # la atracción es muda
@@ -753,6 +759,7 @@ class Game:
             self.exinit()
             self.newlif(old)
             self.emit("boom")
+            self.fxe("boom", e.x, e.y, e.z * Z_SCALE if e.kind == MISSILE else 0.0)
         else:
             self.kill_player()
             self.ekills += 1
@@ -760,6 +767,7 @@ class Game:
         return True
 
     def kill_player(self) -> None:
+        self.fxe("hit", self.player.x, self.player.y)
         self.dead = 0x20
         self.crack = 2
         self.bounce = 0xFF
@@ -790,6 +798,7 @@ class Game:
                 if d < 0x400 and PRXTBL[t] >= d >> 2:
                     shell.ct = -0x60
                     self.emit("thud")
+                    self.fxe("spark", shell.x, shell.y)
                     break
 
     def sauchk(self, shell: Shell, by_player: bool) -> bool:
@@ -803,6 +812,7 @@ class Game:
         s.boom = 0x40
         shell.ct = -0x60
         self.emit("saucer_boom")
+        self.fxe("saucer", s.x, s.y)
         if by_player:
             old = self.score
             self.score += PTS_SAUCER
@@ -1050,6 +1060,7 @@ class Game:
             return
         self.launch(self.eshell, e)
         self.emit("efire")
+        self.fxe("efire", e.x, e.y, 0.0, e.a)
 
     def launch(self, s: Shell, b: Body) -> None:
         s.ct = SHELL_LIFE
@@ -1120,6 +1131,7 @@ class Game:
         self.exinit()
         self.kill_player()
         self.emit("boom")
+        self.fxe("boom", self.enemy.x, self.enemy.y, self.enemy.z * Z_SCALE)
 
     # ── el platillo ───────────────────────────────────────────────────────
     def saucmv(self) -> None:
@@ -1201,6 +1213,7 @@ class Game:
         if c.fire and self.pshell.ct == 0:
             self.launch(self.pshell, p)
             self.emit("fire")
+            self.fxe("fire", p.x, p.y, 0.0, p.a)
 
     def wnshld(self) -> None:
         """← WNSHLD: el parabrisas se resquebraja; luego, vida siguiente o fin."""
@@ -1358,11 +1371,32 @@ def lerp_wrap(a: float, b: float, t: float, period: float) -> float:
 
 
 class Renderer:
+    """Render vectorial en coordenadas del AVG: x a la derecha, y hacia arriba, origen al centro.
+
+    Es la base de los tres aspectos: «1980» (sin brillo), «vector» (brillo de fósforo)
+    y «2026» (subclase Renderer2026). Escala sola a cualquier resolución.
+    """
+
+    solid = False   # rellenar los objetos para que tapen lo que hay detrás
+
     def __init__(self, pg, screen, glow: bool) -> None:
         self.pg = pg
-        self.screen = screen
         self.glow = glow
-        self.clip3d = pg.Rect(0, 384 - VIEW_TOP, SCREEN_W, SCREEN_H - (384 - VIEW_TOP))
+        self.pal = {k: GREEN for k in ("field", "enemy", "shell", "eshell", "missile", "saucer",
+                                        "debris", "logo", "mountain", "moon", "sight", "crack",
+                                        "text", "ember")}
+        self.pal["hud"] = RED
+        self.resize(screen)
+
+    def resize(self, screen) -> None:
+        self.screen = self.target = screen
+        w, h = screen.get_size()
+        self.w, self.h = w, h
+        self.s = h / SCREEN_H
+        self.ox, self.oy = w / 2, h / 2
+        self.half_w = w / (2 * self.s)
+        self.lw = 1
+        self.clip3d = self.pg.Rect(0, int(self.oy - VIEW_TOP * self.s), w, h)
 
     # ── primitivas ────────────────────────────────────────────────────────
     @staticmethod
@@ -1370,15 +1404,18 @@ class Renderer:
         k = max(0.0, min(1.0, k))
         return (int(color[0] * k), int(color[1] * k), int(color[2] * k))
 
+    def px(self, x: float, y: float) -> tuple[float, float]:
+        return self.ox + x * self.s, self.oy - y * self.s
+
     def line(self, x0, y0, x1, y1, color, k=1.0) -> None:
-        a = (512 + x0, 384 - y0)
-        b = (512 + x1, 384 - y1)
+        a, b = self.px(x0, y0), self.px(x1, y1)
         if self.glow:
-            self.pg.draw.line(self.screen, self.shade(color, k * 0.22), a, b, 3)
-        self.pg.draw.aaline(self.screen, self.shade(color, k), a, b)
+            self.pg.draw.line(self.target, self.shade(color, k * 0.22), a, b, 3)
+        self.pg.draw.aaline(self.target, self.shade(color, k), a, b, self.lw)
 
     def dot(self, x, y, color, k=1.0, r=2) -> None:
-        self.pg.draw.circle(self.screen, self.shade(color, k), (int(512 + x), int(384 - y)), r)
+        cx, cy = self.px(x, y)
+        self.pg.draw.circle(self.target, self.shade(color, k), (int(cx), int(cy)), max(1, int(r * self.s)))
 
     def vectors(self, routine, x, y, color, scale=1.0, k=1.0):
         """Intérprete de listas VCTR del AVG: (dx, dy, brillo 0–7) y ('C',) = centro."""
@@ -1419,6 +1456,9 @@ class Renderer:
         """← ROTPNT: delante, ni muy cerca ni muy lejos, y dentro de 45°."""
         return NEAR_CULL <= fx < FAR_CULL and abs(fy) < fx
 
+    def project(self, x, y, z) -> tuple[float, float]:
+        return -y * FOCAL / x, z * FOCAL / x
+
     def seg3(self, p, q, color, k) -> None:
         (x0, y0, z0), (x1, y1, z1) = p, q
         if x0 < NEAR_CLIP and x1 < NEAR_CLIP:
@@ -1436,35 +1476,56 @@ class Renderer:
         c, s = math.cos(rad(rel)), math.sin(rad(rel))
         z0 = fz + self.zoff
         pts = [(fx + vx * c - vy * s, fy + vx * s + vy * c, vz + z0) for vx, vy, vz in verts]
+        if self.solid:
+            self.fill_hull(pts)
         for a, b in edges:
             self.seg3(pts[a], pts[b], color, k)
         return pts
 
-    @staticmethod
-    def depth_k(fx: float, base: int = 0xA0) -> float:
+    def fill_hull(self, pts) -> None:
+        """Silueta convexa rellena: el objeto tapa lo que tiene detrás (pintor, de lejos a cerca)."""
+        if any(x < NEAR_CLIP * 4 for x, _, _ in pts):
+            return
+        scr = sorted({(int(self.ox - y * FOCAL / x * self.s), int(self.oy - z * FOCAL / x * self.s))
+                      for x, y, z in pts})
+        if len(scr) < 3:
+            return
+        hull = convex_hull(scr)
+        if len(hull) >= 3:
+            self.pg.draw.polygon(self.target, self.fill_color, hull)
+
+    def depth_k(self, fx: float, base: int = 0xA0) -> float:
         """← DRAW D.SBRT: el brillo cae con la distancia (DQUE), con suelo en 0x30."""
         b = base - ((int(2 * fx) >> 8) & 0xF0)
         return max(0x30, b) / 0xA0
 
-    def obj(self, name, wx, wy, wa, color=GREEN, z=0.0, base=0xA0, cull=True):
+    def queue(self, items, name, wx, wy, wa, color, z=0.0, base=0xA0, extra=None) -> None:
+        """Encola un modelo visible con su profundidad, para pintarlo de lejos a cerca."""
         fx, fy = self.to_camera(wx, wy)
-        if cull and not self.visible(fx, fy):
-            return None
+        if not self.visible(fx, fy):
+            return
         verts, edges = MODEL[name]
-        return self.model(verts, edges, fx, fy, z, wa - self.ca, color, self.depth_k(fx, base))
+
+        def paint():
+            self.model(verts, edges, fx, fy, z, wa - self.ca, color, self.depth_k(fx, base))
+            if extra:
+                extra()
+        items.append((fx, paint))
 
     # ── la escena ─────────────────────────────────────────────────────────
     def draw(self, g: Game, t: float) -> None:
-        self.screen.fill((0, 0, 0))
         p = g.player
         cam_a = lerp_wrap(p.pa, p.a, t, 256)
         self.set_camera(lerp_wrap(p.px, p.x, t, WORLD), lerp_wrap(p.py, p.y, t, WORLD), cam_a, g.bounce)
+        self.begin(g, t)
         world = not (g.show_table and g.mode == ATTRACT) and g.mode != INITIALS
         if world:
-            self.screen.set_clip(self.clip3d)
+            self.target.set_clip(self.clip3d)
+            self.sky(g, cam_a)
             self.mountains(g, cam_a)
+            self.ground(g)
             self.scene(g, t)
-            self.screen.set_clip(None)
+            self.target.set_clip(None)
             if not g.logo:
                 self.crosshair(g)
             if g.crack:
@@ -1472,77 +1533,109 @@ class Renderer:
         self.radar(g)
         self.lives(g)
         for s, x, y, size, color in g.hud_messages():
-            self.text(s, x, y, size, color)
+            self.text(s, x, y, size, self.pal["hud"] if color == RED else self.pal["text"])
+        self.end(g)
+
+    def begin(self, g: Game, t: float) -> None:
+        self.target.fill((0, 0, 0))
+
+    def end(self, g: Game) -> None:
+        pass
+
+    def sky(self, g: Game, a: float) -> None:
+        pass
+
+    def ground(self, g: Game) -> None:
+        pass
+
+    def mountain_x(self, px: float, a: float) -> float:
+        centre = (512 - 16 * a) % 4096
+        return (px - centre + 2048) % 4096 - 2048
 
     def mountains(self, g: Game, a: float) -> None:
         """← MOUNTS: panorama de 4096 unidades, 16 por unidad de ángulo."""
         drop = g.bounce >> 4
-        self.line(-512, -drop, 512, -drop, GREEN, 3 / 6)
-        centre = (512 - 16 * a) % 4096
+        hw = self.half_w + 40
+        self.line(-hw, -drop, hw, -drop, self.pal["mountain"], 3 / 6)
         for x0, y0, x1, y1, b in PANORAMA:
-            sx = (x0 - centre + 2048) % 4096 - 2048
-            if -560 < sx < 560:
-                self.line(sx, y0 - drop, sx + x1 - x0, y1 - drop, GREEN, min(1.0, b / 5))
-        ti = int(a) & 0xFF
-        if 0x39 <= ti < 0x88:   # ← MOUNTS 21$: ¿se ve el volcán?
-            vx = (VOLCANO[0] - centre + 2048) % 4096 - 2048
+            sx = self.mountain_x(x0, a)
+            if -hw < sx < hw:
+                color = self.pal["mountain"] if b == 3 else self.pal["moon"]
+                self.line(sx, y0 - drop, sx + x1 - x0, y1 - drop, color, min(1.0, b / 5))
+        vx = self.mountain_x(VOLCANO[0], a)
+        if abs(vx) < hw:   # ← MOUNTS 21$: ¿se ve el volcán?
             vy = VOLCANO[1] - drop
             for timer, _, _, rx, ry in g.rocks:
                 if timer:
-                    self.dot(vx + rx, vy + ry, GREEN, ((timer << 3) & 0xE0) / 0xE0 + 0.3, 2)
+                    self.dot(vx + rx, vy + ry, self.pal["ember"], ((timer << 3) & 0xE0) / 0xE0 + 0.3, 2)
 
     def scene(self, g: Game, t: float) -> None:
+        pal = self.pal
+        items: list = []
         for ox, oy, kind, ang in FIELD:
-            self.obj(FIELD_MODEL[kind], ox, oy, ang)
+            self.queue(items, FIELD_MODEL[kind], ox, oy, ang, pal["field"])
         e = g.enemy
         if not e.dead:
             ex, ey = lerp_wrap(e.px, e.x, t, WORLD), lerp_wrap(e.py, e.y, t, WORLD)
             ea = lerp_wrap(e.pa, e.a, t, 256)
             if e.kind == MISSILE:
                 z = lerp(e.pz, e.z, t) * Z_SCALE
-                self.obj("R2D", ex, ey, ea, z=z)
-                fx, fy = self.to_camera(ex, ey)
-                if self.visible(fx, fy):   # ← EXHOBJ: anillo de puntos en el suelo, bajo el misil
-                    for vx, vy, vz in EXHAUST_PTS[e.tread & 7]:
-                        x, y = fx + vx, fy + vy
-                        if x > NEAR_CLIP:
-                            self.dot(-y * FOCAL / x, (vz + self.zoff) * FOCAL / x, GREEN, 0.9, 1)
+                self.queue(items, "R2D", ex, ey, ea, pal["missile"], z=z,
+                           extra=lambda: self.exhaust_ring(e, ex, ey, z))
             elif e.kind == SUPER:
-                self.obj("TR7", ex, ey, ea)
+                self.queue(items, "TR7", ex, ey, ea, pal["enemy"])
             else:
-                if self.obj("TNK", ex, ey, ea) is not None:
-                    self.treads(e, ex, ey, ea)
-                    self.radar_dish(e, ex, ey, ea)
+                self.queue(items, "TNK", ex, ey, ea, pal["enemy"],
+                           extra=lambda: (self.treads(e, ex, ey, ea), self.radar_dish(e, ex, ey, ea)))
         for piece in g.pieces:
             if piece.z >= 0:
                 x, y = lerp_wrap(piece.px, piece.x, t, WORLD), lerp_wrap(piece.py, piece.y, t, WORLD)
-                self.obj(piece.model, x, y, piece.a, z=lerp(piece.pz, piece.z, t) * Z_SCALE)
-        for shell, owner in ((g.pshell, g.player), (g.eshell, e)):
+                self.queue(items, piece.model, x, y, piece.a, pal["debris"],
+                           z=lerp(piece.pz, piece.z, t) * Z_SCALE)
+        for shell, owner, key in ((g.pshell, g.player, "shell"), (g.eshell, e, "eshell")):
             sx, sy = lerp_wrap(shell.px, shell.x, t, WORLD), lerp_wrap(shell.py, shell.y, t, WORLD)
             if shell.ct > 0:
-                self.obj("SHL", sx, sy, owner.a, base=0xE0)
+                self.queue(items, "SHL", sx, sy, owner.a, pal[key], base=0xE0)
+                self.shell_trail(sx, sy, key)
             elif shell.ct < 0:
-                self.starburst(sx, sy, shell.ct)
+                fx, _ = self.to_camera(sx, sy)
+                items.append((fx, lambda sx=sx, sy=sy, ct=shell.ct: self.starburst(sx, sy, ct)))
         s = g.saucer
         if s.on:
             sx, sy = lerp_wrap(s.px, s.x, t, WORLD), lerp_wrap(s.py, s.y, t, WORLD)
-            if s.boom:
-                fx, fy = self.to_camera(sx, sy)
-                if self.visible(fx, fy) and s.boom & 4:
-                    verts, edges = MODEL["SAU"]
-                    self.model(verts, edges, fx, fy, 0, s.a - self.ca, GREEN, 1.0)
-            else:
-                self.obj("SAU", sx, sy, s.a)
+            if not s.boom or s.boom & 4:
+                self.queue(items, "SAU", sx, sy, s.a, pal["saucer"])
+        items.sort(key=lambda it: -it[0])
+        for _, paint in items:
+            paint()
         if g.logo:
             self.battle_logo(g, t)
+        self.particles()
+
+    def shell_trail(self, sx, sy, key) -> None:
+        pass
+
+    def particles(self) -> None:
+        pass
+
+    def exhaust_ring(self, e: Enemy, ex, ey, z) -> None:
+        """← EXHOBJ: anillo de puntos en el suelo, bajo el misil."""
+        fx, fy = self.to_camera(ex, ey)
+        for vx, vy, vz in EXHAUST_PTS[e.tread & 7]:
+            x, y = fx + vx, fy + vy
+            if x > NEAR_CLIP:
+                sx, sy = self.project(x, y, vz + self.zoff)
+                self.dot(sx, sy, self.pal["missile"], 0.9, 1)
 
     def treads(self, e: Enemy, ex, ey, ea) -> None:
         """← ROTATE: se ven las orugas delanteras o las traseras, animadas con TRDCTR."""
         rel = (ea - self.ca + 0x40) % 256
         names = FRONT_TREADS if rel >= 128 else REAR_TREADS
         fx, fy = self.to_camera(ex, ey)
+        solid, self.solid = self.solid, False
         self.model(TREAD[names[e.tread & 3]], TREAD_EDGES, fx, fy, 0, ea - self.ca,
-                   GREEN, self.depth_k(fx, 0x80))
+                   self.pal["enemy"], self.depth_k(fx, 0x80))
+        self.solid = solid
 
     def radar_dish(self, e: Enemy, ex, ey, ea) -> None:
         """La antena gira sobre el mástil (vértices 22–23 de TNKTBL)."""
@@ -1551,7 +1644,9 @@ class Renderer:
         fx, fy = self.to_camera(mx, my)
         if fx > NEAR_CLIP:
             verts, edges = MODEL["RDR"]
-            self.model(verts, edges, fx, fy, 0, e.radar - self.ca, GREEN, self.depth_k(fx))
+            solid, self.solid = self.solid, False
+            self.model(verts, edges, fx, fy, 0, e.radar - self.ca, self.pal["enemy"], self.depth_k(fx))
+            self.solid = solid
 
     def starburst(self, wx, wy, ct) -> None:
         """← EXPOBJ / EXPIC: estallido de proyectil, dibujado como puntos."""
@@ -1560,15 +1655,17 @@ class Renderer:
             return
         k = FOCAL / fx * (1.6 + ct / 160)
         sx, sy = -fy * FOCAL / fx, -20 * FOCAL / fx + self.zoff * FOCAL / fx
-        self.vectors(VEC2D["EXPIC"], sx, sy, GREEN, max(0.15, k))
+        self.vectors(VEC2D["EXPIC"], sx, sy, self.pal["shell"], max(0.15, k))
 
     def battle_logo(self, g: Game, t: float) -> None:
         """← BATTLE: «BATTLE» y, cuando sube lo bastante, «ZONE»."""
         lx = lerp(g.logox - 0x40, g.logox, t) / 2
         lz = lerp(g.logoz - 8, g.logoz, t) * Z_SCALE
         parts = LOGO_PARTS if g.logoz >= -0x250 else LOGO_PARTS[:2]
+        solid, self.solid = self.solid, False
         for verts, edges in parts:
-            self.model(verts, edges, lx, 0, lz, 0, GREEN, 1.0)
+            self.model(verts, edges, lx, 0, lz, 0, self.pal["logo"], 1.0)
+        self.solid = solid
 
     # ── HUD ───────────────────────────────────────────────────────────────
     def crosshair(self, g: Game) -> None:
@@ -1576,31 +1673,399 @@ class Renderer:
         if g.pshell.ct > 0 and g.ticks & 2:
             return
         name = "XCROS1" if g.pturn < 2 and not g.enemy.dead else "XCROSS"
-        self.vectors(VEC2D[name], 0, 0, GREEN)
+        self.vectors(VEC2D[name], 0, 0, self.pal["sight"])
 
     def cracks(self, crack: int) -> None:
         """← WNSHLD: hasta 8 grietas, una más por tick."""
         x = y = 0.0
         for routine in VEC2D["CRACKS"][: min(8, crack // 2)]:
-            x, y = self.vectors(routine, x, y, GREEN)
+            x, y = self.vectors(routine, x, y, self.pal["crack"])
 
     def radar(self, g: Game) -> None:
         """← DRADAR / RDRING: barrido, marcas, cuña de visión y eco."""
         cx, cy = 0, 316
-        self.vectors(VEC2D["RDRING"], 0, 0, RED)
+        hud = self.pal["hud"]
+        self.radar_back(g, cx, cy)
+        self.vectors(VEC2D["RDRING"], 0, 0, hud)
         s = rad(g.sangle)
-        self.line(cx, cy, cx + 63 * math.sin(s), cy + 63 * math.cos(s), RED, 0.9)
+        self.line(cx, cy, cx + 63 * math.sin(s), cy + 63 * math.cos(s), hud, 0.9)
         e, p = g.enemy, g.player
         if g.blip and not e.dead and g.tdist < RADAR_RANGE_HI:
             gang = rad(int(p.a) - track(p.x, p.y, e.x, e.y))
             r = g.tdist / 2
-            self.dot(cx + r * math.sin(gang), cy + r * math.cos(gang), RED, g.blip / 0xF0, 3)
+            self.dot(cx + r * math.sin(gang), cy + r * math.cos(gang), hud, g.blip / 0xF0, 3)
+
+    def radar_back(self, g: Game, cx, cy) -> None:
+        pass
 
     def lives(self, g: Game) -> None:
         """← INFO: un tanquecito por vida."""
         x, y = 128.0, 360.0
         for _ in range(g.lives):
-            x, y = self.vectors(VEC2D["TANKS"], x, y, RED)
+            x, y = self.vectors(VEC2D["TANKS"], x, y, self.pal["hud"])
+
+
+def convex_hull(points: list) -> list:
+    """Envolvente convexa (cadena monótona de Andrew) de puntos ya ordenados."""
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lower: list = []
+    for p in points:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list = []
+    for p in reversed(points):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+@dataclass(slots=True)
+class Spark:
+    x: float
+    y: float
+    z: float
+    vx: float
+    vy: float
+    vz: float
+    life: float
+    ttl: float
+    color: tuple
+    size: float
+    grav: float = 2600.0
+
+
+class Renderer2026(Renderer):
+    """Gráficos de 2026 sobre el mismo mundo de 1980.
+
+    Resolución nativa y panorámica, objetos sólidos que se tapan entre sí, cielo con
+    estrellas, montañas macizas, rejilla de suelo con niebla, partículas 3D, persistencia
+    de fósforo, bloom real (desenfoque gaussiano y suma), viñeta, sacudidas de cámara y
+    aberración cromática al recibir un impacto. Todo sigue siendo vectorial y en un fichero.
+    """
+
+    solid = True
+    GROUND_Z = -320.0          # suelo de los modelos (z = −80 en tabla × 4)
+
+    def __init__(self, pg, screen, low: bool = False, crt: bool = False) -> None:
+        self.low, self.crt = low, crt
+        self.rng = random.Random(2026)
+        self.sparks: list[Spark] = []
+        self.sprites: dict = {}
+        self.hurt = self.shake = self.flash = self.recoil = 0.0
+        self.clock = 0.0
+        self.last_ms = None
+        star_rng = random.Random(1980)
+        self.stars = [(star_rng.uniform(0, 4096), star_rng.uniform(40, 520), star_rng.uniform(0.25, 1.0),
+                       star_rng.uniform(0, math.tau)) for _ in range(260)]
+        super().__init__(pg, screen, glow=False)
+        self.fill_color = (2, 9, 10)
+        self.pal = {
+            "field": (70, 235, 205), "enemy": (150, 255, 90), "shell": (210, 255, 200),
+            "eshell": (255, 150, 60), "missile": (255, 90, 60), "saucer": (255, 90, 230),
+            "debris": (190, 255, 120), "logo": (110, 255, 210), "mountain": (60, 200, 190),
+            "moon": (225, 240, 255), "sight": (120, 255, 150), "crack": (230, 255, 240),
+            "text": (130, 255, 170), "hud": (255, 70, 55), "ember": (255, 140, 40),
+        }
+
+    def resize(self, screen) -> None:
+        super().resize(screen)
+        pg, w, h = self.pg, self.w, self.h
+        self.lw = 2 if self.s >= 1.15 else 1
+        self.clip3d = pg.Rect(0, 0, w, h)
+        self.S = pg.Surface((w, h)).convert()
+        self.P = pg.Surface((w, h)).convert()
+        self.P.fill((0, 0, 0))
+        self.target = self.S
+        # pirámide de bloom: 1/4, 1/8 y 1/16 de la resolución
+        self.small = (max(4, w // 4), max(4, h // 4))
+        self.mid = (max(2, w // 8), max(2, h // 8))
+        self.tiny = (max(1, w // 16), max(1, h // 16))
+        self.margin = int(40 * self.s)
+        self.bg = self.make_background()
+        self.scan = self.make_scanlines() if self.crt else None
+
+    # ── superficies precalculadas ────────────────────────────────────────
+    def make_background(self):
+        pg, w, h, m = self.pg, self.w, self.h, self.margin
+        bg = pg.Surface((w, h + 2 * m)).convert()
+        hy = int(self.oy) + m
+        top, mid, hor = (1, 2, 10), (6, 14, 34), (18, 48, 62)
+        g0, g1 = (5, 22, 24), (0, 2, 3)
+        for y in range(h + 2 * m):
+            if y < hy:
+                t = y / max(1, hy)
+                c = [lerp(a, b, t) for a, b in zip(top, mid)] if t < 0.8 else \
+                    [lerp(a, b, (t - 0.8) / 0.2) for a, b in zip(mid, hor)]
+            else:
+                t = min(1.0, (y - hy) / max(1, h + 2 * m - hy) * 1.6)
+                c = [lerp(a, b, t ** 0.6) for a, b in zip(g0, g1)]
+            pg.draw.line(bg, [int(v) for v in c], (0, y), (w, y))
+        vig = self.make_vignette((w, h + 2 * m))   # viñeta horneada en el fondo: no cuesta nada por fotograma
+        bg.blit(vig, (0, 0), special_flags=pg.BLEND_MULT)
+        return bg
+
+    def make_vignette(self, size):
+        pg = self.pg
+        sw, sh = 64, 36
+        small = pg.Surface((sw, sh)).convert()
+        for y in range(sh):
+            for x in range(sw):
+                dx, dy = (x - sw / 2 + 0.5) / (sw / 2), (y - sh / 2 + 0.5) / (sh / 2)
+                v = int(255 * max(0.0, min(1.0, 1.15 - 0.45 * (dx * dx + dy * dy))))
+                small.set_at((x, y), (v, v, v))
+        return pg.transform.smoothscale(small, size)
+
+    def make_scanlines(self):
+        pg = self.pg
+        sl = pg.Surface((self.w, self.h)).convert()
+        sl.fill((255, 255, 255))
+        for y in range(0, self.h, 3):
+            pg.draw.line(sl, (175, 175, 175), (0, y), (self.w, y))
+        return sl
+
+    def sprite(self, color, r: int, level: int):
+        """Halo radial precalculado para sumar luz (BLEND_ADD)."""
+        key = (color, r, level)
+        spr = self.sprites.get(key)
+        if spr is None:
+            pg = self.pg
+            spr = pg.Surface((2 * r + 1, 2 * r + 1)).convert()
+            spr.fill((0, 0, 0))
+            k0 = level / 4
+            for i in range(r, 0, -1):
+                f = (1 - i / (r + 1)) ** 2.2 * k0
+                pg.draw.circle(spr, self.shade(color, f), (r, r), i)
+            if len(self.sprites) > 2000:
+                self.sprites.clear()
+            self.sprites[key] = spr
+        return spr
+
+    def glow_at(self, sx, sy, color, radius_px, k=1.0) -> None:
+        r = max(1, min(160, int(radius_px)))
+        level = max(1, min(4, int(k * 4 + 0.5)))
+        spr = self.sprite(color, r, level)
+        self.target.blit(spr, (int(sx) - r, int(sy) - r), special_flags=self.pg.BLEND_ADD)
+
+    # ── primitivas con luz ────────────────────────────────────────────────
+    def dot(self, x, y, color, k=1.0, r=2) -> None:
+        cx, cy = self.px(x, y)
+        self.glow_at(cx, cy, color, r * 3 * self.s, k)
+        self.pg.draw.circle(self.target, self.shade(color, k), (int(cx), int(cy)), max(1, int(r * 0.6 * self.s)))
+
+    def visible(self, fx, fy) -> bool:
+        return NEAR_CULL <= fx < 34000 and abs(fy) < 1.7 * fx   # panorámico y con niebla, sin saltos
+
+    def depth_k(self, fx: float, base: int = 0xA0) -> float:
+        return min(1.0, 1.25 * math.exp(-fx / 15000)) * (base / 0xA0) ** 0.5
+
+    # ── fotograma ─────────────────────────────────────────────────────────
+    def begin(self, g: Game, t: float) -> None:
+        now = self.pg.time.get_ticks() / 1000
+        dt = 1 / 60 if self.last_ms is None else max(0.0, min(0.1, now - self.last_ms))
+        self.last_ms = now
+        self.dt = dt
+        self.clock += dt
+        self.consume_fx(g)
+        for name in ("hurt", "shake", "flash", "recoil"):
+            setattr(self, name, max(0.0, getattr(self, name) - dt * {"hurt": 1.2, "shake": 2.5,
+                                                                    "flash": 6.0, "recoil": 7.0}[name]))
+        if g.moving and not g.dead:
+            self.zoff += 4 * math.sin(self.clock * 9)       # balanceo al rodar
+        self.zoff += 26 * self.recoil                        # retroceso del cañón
+        drop = (g.bounce >> 4) * self.s
+        self.target = self.S
+        self.S.blit(self.bg, (0, int(drop) - self.margin))
+        self.update_sparks(dt)
+
+    def sky(self, g: Game, a: float) -> None:
+        drop = g.bounce >> 4
+        for px_, py_, b, ph in self.stars:
+            sx = self.mountain_x(px_, a)
+            if abs(sx) < self.half_w:
+                tw = 0.65 + 0.35 * math.sin(self.clock * 2.3 + ph)
+                cx, cy = self.px(sx, py_ - drop)
+                c = self.shade((200, 220, 255), b * tw)
+                self.S.fill(c, (int(cx), int(cy), max(1, int(self.s)), max(1, int(self.s))))
+        mx = self.mountain_x(482, a)   # halo de la luna
+        if abs(mx) < self.half_w + 80:
+            cx, cy = self.px(mx, 132 - drop)
+            self.glow_at(cx, cy, (60, 80, 110), 110 * self.s, 1.0)
+
+    def mountains(self, g: Game, a: float) -> None:
+        drop = g.bounce >> 4
+        hw = self.half_w + 40
+        fill = (5, 22, 26)
+        for x0, y0, x1, y1, b in PANORAMA:
+            if b != 3:
+                continue
+            sx = self.mountain_x(x0, a)
+            if -hw < sx < hw:
+                pts = [self.px(sx, y0 - drop), self.px(sx + x1 - x0, y1 - drop),
+                       self.px(sx + x1 - x0, -drop), self.px(sx, -drop)]
+                self.pg.draw.polygon(self.S, fill, pts)
+        super().mountains(g, a)
+        hx, hy = self.px(0, -drop)
+        self.pg.draw.line(self.S, (30, 110, 110), (0, hy), (self.w, hy), max(1, int(self.s)))
+        vx = self.mountain_x(VOLCANO[0], a)
+        if abs(vx) < hw:   # resplandor del cráter
+            cx, cy = self.px(vx, VOLCANO[1] - drop)
+            self.glow_at(cx, cy, (120, 50, 10), 46 * self.s, 0.5 + 0.25 * math.sin(self.clock * 3))
+
+    def ground(self, g: Game) -> None:
+        """Rejilla del suelo anclada al mundo: da sensación de avance. Se funde con la niebla."""
+        spacing = 4096 if self.low else 2048
+        reach = 16384
+        n = reach // spacing
+        z = self.GROUND_Z + self.zoff
+        color = (40, 170, 160)
+        ox, oy = self.cx % spacing, self.cy % spacing
+        cc, cs = self.cc, self.cs
+        for axis in (0, 1):
+            for i in range(-n, n + 1):
+                fixed = i * spacing - (ox if axis == 0 else oy)
+                prev = None
+                for j in range(-n // 2, n // 2 + 1):
+                    run = j * spacing * 2
+                    rx, ry = (fixed, run) if axis == 0 else (run, fixed)
+                    fx, fy = rx * cc + ry * cs, -rx * cs + ry * cc
+                    cur = (fx, fy, z)
+                    if prev is not None and (fx > NEAR_CLIP or prev[0] > NEAR_CLIP):
+                        d = max(prev[0], fx)
+                        k = 0.55 * math.exp(-d / 6500) * min(1.0, math.hypot(rx, ry) / 900)
+                        if k > 0.03:
+                            self.seg3(prev, cur, color, k)
+                    prev = cur
+
+    def shell_trail(self, sx, sy, key) -> None:
+        color = self.pal[key]
+        for _ in range(2):
+            self.sparks.append(Spark(sx + self.rng.uniform(-30, 30), sy + self.rng.uniform(-30, 30),
+                                     -14 + self.rng.uniform(-8, 8), 0, 0, 0, 0.22, 0.22, color, 34, 0))
+
+    def exhaust_ring(self, e: Enemy, ex, ey, z) -> None:
+        super().exhaust_ring(e, ex, ey, z)
+        a = rad(e.a)
+        for _ in range(3):
+            self.sparks.append(Spark(ex - 700 * math.cos(a), ey - 700 * math.sin(a), z + self.rng.uniform(-40, 40),
+                                     self.rng.uniform(-300, 300), self.rng.uniform(-300, 300),
+                                     self.rng.uniform(0, 300), 0.35, 0.35, (255, 120, 40), 60, 200))
+
+    # ── partículas ────────────────────────────────────────────────────────
+    def burst(self, x, y, z, n, colors, speed, size, ttl, up=0.6) -> None:
+        rnd = self.rng
+        for _ in range(n):
+            th, ph = rnd.uniform(0, math.tau), rnd.uniform(-0.2, 1.0) * up * math.pi / 2
+            v = rnd.uniform(0.25, 1.0) * speed
+            life = rnd.uniform(0.5, 1.0) * ttl
+            self.sparks.append(Spark(x, y, z, v * math.cos(th) * math.cos(ph), v * math.sin(th) * math.cos(ph),
+                                     v * math.sin(ph) + speed * 0.3, life, life, rnd.choice(colors),
+                                     size * rnd.uniform(0.6, 1.4)))
+
+    def consume_fx(self, g: Game) -> None:
+        for kind, x, y, z, a in g.fx:
+            if kind == "boom":
+                self.burst(x, y, z - 120, 40 if self.low else 90,
+                           [(255, 230, 160), (255, 150, 50), (255, 110, 30), self.pal["enemy"]],
+                           2600, 90, 1.3, up=0.9)
+                self.burst(x, y, z - 100, 10, [(255, 120, 40), (120, 60, 30)], 700, 320, 0.9, up=1.0)  # bola de fuego
+                self.sparks.append(Spark(x, y, z - 60, 0, 0, 0, 0.45, 0.45, (255, 200, 120), 1600, 0))
+                self.shake = max(self.shake, 0.35)
+            elif kind == "spark":
+                self.burst(x, y, -20, 18 if self.low else 40, [(255, 220, 140), self.pal["field"]], 2200, 40, 0.6)
+                self.sparks.append(Spark(x, y, -20, 0, 0, 0, 0.2, 0.2, (255, 220, 160), 500, 0))
+            elif kind == "saucer":
+                self.burst(x, y, 60, 120, [self.pal["saucer"], (90, 220, 255), (255, 255, 255)], 3000, 60, 1.4, up=1.0)
+            elif kind == "fire":
+                self.flash = 0.35
+                self.recoil = 1.0
+                fx, fy = math.cos(rad(a)), math.sin(rad(a))
+                self.burst(x + 700 * fx, y + 700 * fy, -30, 8, [(255, 255, 220), self.pal["shell"]], 500, 22, 0.25)
+            elif kind == "efire":
+                fx, fy = math.cos(rad(a)), math.sin(rad(a))
+                self.sparks.append(Spark(x + 620 * fx, y + 620 * fy, 0, 0, 0, 0, 0.25, 0.25, (255, 170, 80), 700, 0))
+            elif kind == "hit":
+                self.hurt, self.shake = 1.0, 1.0
+        g.fx.clear()
+        if len(self.sparks) > 1500:
+            del self.sparks[: len(self.sparks) - 1500]
+
+    def update_sparks(self, dt: float) -> None:
+        alive = []
+        gz = self.GROUND_Z
+        for p in self.sparks:
+            p.life -= dt
+            if p.life <= 0:
+                continue
+            p.vz -= p.grav * dt
+            p.x += p.vx * dt
+            p.y += p.vy * dt
+            p.z += p.vz * dt
+            if p.z < gz:   # rebote en el suelo
+                p.z, p.vz = gz, -p.vz * 0.35
+                p.vx *= 0.6
+                p.vy *= 0.6
+            alive.append(p)
+        self.sparks = alive
+
+    def particles(self) -> None:
+        for p in self.sparks:
+            fx, fy = self.to_camera(p.x, p.y)
+            if fx < NEAR_CLIP * 6 or abs(fy) > 2 * fx:
+                continue
+            sx, sy = self.project(fx, fy, p.z + self.zoff)
+            cx, cy = self.px(sx, sy)
+            k = (p.life / p.ttl) ** 0.7 * min(1.0, 1.4 * math.exp(-fx / 20000))
+            self.glow_at(cx, cy, p.color, p.size * FOCAL / fx * self.s, k)
+
+    # ── HUD ───────────────────────────────────────────────────────────────
+    def radar_back(self, g: Game, cx, cy) -> None:
+        pg = self.pg
+        c = self.px(cx, cy)
+        pg.draw.circle(self.S, (26, 3, 3), (int(c[0]), int(c[1])), int(70 * self.s))
+        pg.draw.circle(self.S, (90, 14, 10), (int(c[0]), int(c[1])), int(70 * self.s), max(1, int(self.s)))
+        for i in range(1, 10):   # estela del barrido
+            s = rad(g.sangle - i * 2.2)
+            self.line(cx, cy, cx + 63 * math.sin(s), cy + 63 * math.cos(s), self.pal["hud"], 0.45 * (1 - i / 10))
+
+    # ── posproceso ────────────────────────────────────────────────────────
+    def end(self, g: Game) -> None:
+        pg = self.pg
+        dt = self.dt
+        if self.flash:
+            v = int(40 * self.flash)
+            self.S.fill((v, v, int(v * 0.8)), special_flags=pg.BLEND_ADD)
+        keep = int(255 * math.exp(-dt / 0.045))   # persistencia del fósforo (~45 ms)
+        self.P.fill((keep, keep, keep), special_flags=pg.BLEND_MULT)
+        self.P.blit(self.S, (0, 0), special_flags=pg.BLEND_MAX)
+        sx = sy = 0
+        if self.shake:
+            amp = 14 * self.s * self.shake
+            sx, sy = int(self.rng.uniform(-amp, amp)), int(self.rng.uniform(-amp, amp))
+        out = self.screen
+        if sx or sy:
+            out.fill((0, 0, 0))
+        out.blit(self.P, (sx, sy))
+        if not self.low:
+            # Bloom por pirámide: reducir es desenfocar. Tres niveles sumados a 1/4 y un solo
+            # reescalado a pantalla completa; mucho más barato que un gaussiano.
+            ss = pg.transform.smoothscale
+            small = ss(self.P, self.small)
+            small.fill((22, 22, 22), special_flags=pg.BLEND_SUB)        # solo brilla lo brillante
+            mid = ss(small, self.mid)
+            glow = ss(mid, self.small)                                   # halo cercano
+            glow.blit(ss(ss(mid, self.tiny), self.small), (0, 0), special_flags=pg.BLEND_ADD)  # halo ancho
+            out.blit(ss(glow, (self.w, self.h)), (sx, sy), special_flags=pg.BLEND_ADD)
+        if self.hurt:   # aberración cromática y destello rojo
+            ghost = self.P.copy()
+            ghost.fill((255, 40, 40), special_flags=pg.BLEND_MULT)
+            off = int(10 * self.s * self.hurt)
+            out.blit(ghost, (sx + off, sy), special_flags=pg.BLEND_ADD)
+            out.fill((int(70 * self.hurt), 0, 0), special_flags=pg.BLEND_ADD)
+        if self.scan is not None:
+            out.blit(self.scan, (0, 0), special_flags=pg.BLEND_MULT)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1788,17 +2253,29 @@ def run(args, opts: Options) -> None:
 
     pg.mixer.pre_init(Sound.RATE, -16, 1, 512)
     pg.init()
+    modern = args.gfx == "2026"
+    # Resolución interna fija y escalado por GPU (SDL «SCALED»): el coste por fotograma no
+    # depende de si el monitor es 1080p o 4K, y la ventana se puede redimensionar libremente.
+    size = args.res if modern else (SCREEN_W, SCREEN_H)
     flags = pg.SCALED | pg.RESIZABLE | (pg.FULLSCREEN if args.fullscreen else 0)
-    try:
-        screen = pg.display.set_mode((SCREEN_W, SCREEN_H), flags, vsync=1)
-    except pg.error:
-        screen = pg.display.set_mode((SCREEN_W, SCREEN_H), flags)
+
+    def open_window():
+        try:
+            return pg.display.set_mode(size, flags, vsync=1)
+        except pg.error:
+            return pg.display.set_mode(size, flags)
+
+    screen = open_window()
     pg.display.set_caption("battlezonepy — homenaje no oficial a Battlezone (Atari, 1980)")
     pg.joystick.init()
     joy = pg.joystick.Joystick(0) if pg.joystick.get_count() else None
 
     game = Game(opts, args.seed, load_table())
-    rend = Renderer(pg, screen, glow=not args.classic)
+    if modern:
+        rend = Renderer2026(pg, screen, low=args.low, crt=args.crt)
+    else:
+        rend = Renderer(pg, screen, glow=args.gfx == "vector")
+    interpolate = args.gfx != "1980"
     sound = Sound(pg, not args.mute)
     print(HELP)
     clock = pg.time.Clock()
@@ -1840,7 +2317,7 @@ def run(args, opts: Options) -> None:
             game.tick(Ctrl(left, right, fire, edges.start, edges.up, edges.down, edges.select))
             edges = Ctrl()
             acc -= step
-        rend.draw(game, 1.0 if args.classic else acc / step)
+        rend.draw(game, acc / step if interpolate else 1.0)
         sound.update(game)
         pg.display.flip()
         frames += 1
@@ -1975,8 +2452,42 @@ def selftest() -> int:
         g.tick(Ctrl())
     check("modo atracción estable", g.mode == ATTRACT)
 
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    try:
+        import pygame as pg
+    except ImportError:
+        print("  · pygame-ce no está instalado: se omiten las pruebas de render")
+    else:
+        pg.display.init()
+        surf = pg.display.set_mode((640, 360))
+        g = Game(seed=10)
+        g.start_game()
+        for _ in range(40):
+            g.tick(Ctrl(1, 1, True))
+        g.saucer.on, g.saucer.x, g.saucer.y = True, g.player.x + 3000, g.player.y
+        g.fxe("boom", g.player.x + 3000, g.player.y)
+        g.fxe("hit", g.player.x, g.player.y)
+        renderers = (Renderer2026(pg, surf), Renderer2026(pg, surf, low=True, crt=True),
+                     Renderer(pg, surf, glow=True))
+        for rend in renderers:
+            for _ in range(3):
+                rend.draw(g, 0.5)
+        check("render 2026, 2026 --low --crt y vector sin excepciones", not g.fx and renderers[0].sparks)
+        pg.quit()
+
     print(f"{ok} correctas, {len(fails)} fallidas")
     return 1 if fails else 0
+
+
+def parse_res(text: str) -> tuple[int, int]:
+    try:
+        w, h = (int(v) for v in text.lower().split("x"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("usa ANCHOxALTO, por ejemplo 1920x1080") from None
+    if not (320 <= w <= 7680 and 240 <= h <= 4320):
+        raise argparse.ArgumentTypeError("resolución fuera de rango")
+    return w, h
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1989,13 +2500,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--missile", type=int, choices=tuple(k * 1000 for k in MISLVL), default=10000,
                     help="puntuación desde la que aparecen misiles")
     ap.add_argument("--seed", type=int, default=None, help="semilla: partida reproducible")
-    ap.add_argument("--classic", action="store_true",
-                    help="15,6 imágenes por segundo y sin brillo de fósforo, como el original")
+    ap.add_argument("--gfx", choices=("2026", "vector", "1980"), default="2026",
+                    help="aspecto: 2026 (bloom, sólidos, partículas, panorámico), "
+                         "vector (alambre con brillo, 4:3) o 1980 (15,6 imágenes/s, como el original)")
+    ap.add_argument("--classic", action="store_true", help="atajo de --gfx 1980")
+    ap.add_argument("--res", type=parse_res, default=(1600, 900), metavar="ANCHOxALTO",
+                    help="resolución interna del aspecto 2026 (por defecto 1600x900; "
+                         "la GPU la escala a la ventana o a la pantalla completa)")
+    ap.add_argument("--low", action="store_true", help="2026 sin bloom y con menos partículas (equipos lentos)")
+    ap.add_argument("--crt", action="store_true", help="2026 con líneas de barrido de tubo")
     ap.add_argument("--mute", action="store_true", help="sin sonido")
     ap.add_argument("--selftest", action="store_true", help="pruebas sin ventana")
     ap.add_argument("--frames", type=int, default=0, help=argparse.SUPPRESS)
     ap.add_argument("--screenshot", default="", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.classic:
+        args.gfx = "1980"
     if args.selftest:
         return selftest()
     opts = Options(lives=args.lives,
